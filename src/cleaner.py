@@ -5,7 +5,7 @@ Bao gồm:
 - Chuẩn hóa tên cột sang tiếng Việt.
 - Kiểm tra missing values và dữ liệu trùng lặp.
 - Xử lý giá trị ngoại lai (Outliers) bằng kỹ thuật Winsorization / Capping (1% - 99%).
-- Phân nhóm chất lượng thành 3 bậc: Kém (3-4), Trung bình (5-6), Thượng hạng (7-9).
+- Phân nhóm chất lượng thành 3 bậc: Kém (<= 4), Trung bình (4 < điểm < 6.5), Thượng hạng (>= 6.5).
 - Xuất dữ liệu chuẩn sang định dạng Feather.
 """
 
@@ -13,14 +13,15 @@ from typing import Tuple, List, Optional
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from sklearn.preprocessing import StandardScaler
 
-# Import từ module nội bộ
+
 try:
     from src.data_loader import doc_du_lieu_goc, luu_du_lieu_chuan
 except ImportError:
     from data_loader import doc_du_lieu_goc, luu_du_lieu_chuan
 
-# Bản đồ ánh xạ tên cột từ tiếng Anh sang tiếng Việt chuẩn
+
 BAN_DO_TEN_COT = {
     "fixed acidity": "axit_co_dinh",
     "volatile acidity": "axit_bay_hoi",
@@ -37,7 +38,6 @@ BAN_DO_TEN_COT = {
     "loai_ruou": "loai_ruou"
 }
 
-# Danh sách 11 chỉ số hóa lý cần phân tích
 CAC_COT_HOA_LY = [
     "axit_co_dinh",
     "axit_bay_hoi",
@@ -58,11 +58,8 @@ def chuan_hoa_ten_cot(df: pd.DataFrame) -> pd.DataFrame:
     Chuẩn hóa tên cột của DataFrame sang tiếng Việt theo chuẩn BAN_DO_TEN_COT.
     """
     df = df.copy()
-    # Loại bỏ khoảng trắng thừa ở tên cột nếu có
     df.columns = [c.strip() for c in df.columns]
-    # Đổi tên cột
-    df = df.rename(columns=BAN_DO_TEN_COT)
-    return df
+    return df.rename(columns=BAN_DO_TEN_COT)
 
 
 def kiem_tra_chat_luong_du_lieu(df: pd.DataFrame) -> dict:
@@ -73,13 +70,12 @@ def kiem_tra_chat_luong_du_lieu(df: pd.DataFrame) -> dict:
     so_dong_thieu = df.isnull().sum().to_dict()
     so_dong_trung_lap = int(df.duplicated().sum())
 
-    thong_tin = {
+    return {
         "tong_so_dong": tong_so_dong,
         "so_dong_trung_lap": so_dong_trung_lap,
         "ti_le_trung_lap": round((so_dong_trung_lap / tong_so_dong) * 100, 2),
         "cot_thieu_du_lieu": {k: v for k, v in so_dong_thieu.items() if v > 0}
     }
-    return thong_tin
 
 
 def xu_ly_ngoai_lai_capping(
@@ -90,18 +86,6 @@ def xu_ly_ngoai_lai_capping(
 ) -> Tuple[pd.DataFrame, dict]:
     """
     Xử lý các giá trị ngoại lai bằng phương pháp Winsorization / Capping.
-    Các giá trị nhỏ hơn phân vị dưới sẽ được gán bằng giá trị phân vị dưới.
-    Các giá trị lớn hơn phân vị trên sẽ được gán bằng giá trị phân vị trên.
-    Kỹ thuật này giúp bảo tồn 100% số lượng quan sát của tập dữ liệu.
-
-    Tham số:
-        df: DataFrame đầu vào.
-        danh_sach_cot: Danh sách các cột số cần xử lý.
-        phan_vi_duoi: Ngưỡng phân vị dưới (mặc định 0.01 tức 1%).
-        phan_vi_tren: Ngưỡng phân vị trên (mặc định 0.99 tức 99%).
-
-    Trả về:
-        Tuple gồm (DataFrame sau xử lý, dict thông tin ngưỡng của từng cột).
     """
     df_clean = df.copy()
     thong_tin_nguong = {}
@@ -126,40 +110,69 @@ def xu_ly_ngoai_lai_capping(
     return df_clean, thong_tin_nguong
 
 
-def tao_bien_phan_bac_chat_luong(df: pd.DataFrame) -> pd.DataFrame:
+def detect_outliers_iqr(data: pd.DataFrame, column: str) -> Tuple[int, float, float]:
     """
-    Tạo biến phân loại 3 bậc chất lượng rượu vang:
-    - Kém (Low/Poor): điểm 3 - 4
-    - Trung bình (Medium/Normal): điểm 5 - 6
-    - Thượng hạng (High/Premium): điểm 7 - 9
+    Hàm phát hiện và đếm số lượng ngoại lai theo phương pháp IQR (Interquartile Range) của Nhóm 6.
+    """
+    Q1 = data[column].quantile(0.25)
+    Q3 = data[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = data[(data[column] < lower_bound) | (data[column] > upper_bound)]
+    return len(outliers), float(lower_bound), float(upper_bound)
 
-    Bổ sung thêm:
-    - bac_chat_luong: Nhãn phân loại dạng chuỗi ('Kém', 'Trung bình', 'Thượng hạng')
-    - ma_bac_chat_luong: Mã số thứ tự (0, 1, 2)
-    - chat_luong_cao: Nhãn nhị phân (1 nếu Thượng hạng, 0 nếu Kém hoặc Trung bình)
+
+def chuan_hoa_thang_do_standard_scaler(
+    df: pd.DataFrame,
+    danh_sach_cot: Optional[List[str]] = None
+) -> Tuple[pd.DataFrame, StandardScaler]:
+    """
+    Chuẩn hóa thang đo các đặc trưng số về phân phối chuẩn (Mean ~ 0, Std ~ 1) bằng StandardScaler.
+    """
+    df_copy = df.copy()
+    if danh_sach_cot is None:
+        danh_sach_cot = [c for c in CAC_COT_HOA_LY if c in df_copy.columns]
+        if not danh_sach_cot:
+            danh_sach_cot = list(df_copy.select_dtypes(include=[np.number]).columns)
+
+    scaler = StandardScaler()
+    scaled_matrix = scaler.fit_transform(df_copy[danh_sach_cot])
+    df_scaled = pd.DataFrame(scaled_matrix, columns=danh_sach_cot, index=df_copy.index)
+    return df_scaled, scaler
+
+
+def tao_bien_phan_bac_chat_luong(
+    df: pd.DataFrame,
+    nguong_te: float = 4.0,
+    nguong_tot: float = 6.5
+) -> pd.DataFrame:
+    """
+    Tạo biến phân loại chất lượng rượu vang theo ngưỡng mới:
+    - Kém (Rượu tệ): điểm <= 4.0
+    - Trung bình: 4.0 < điểm < 6.5
+    - Thượng hạng (Rượu tốt): điểm >= 6.5
+
+    Bổ sung các cột (giữ nguyên tên cột để tương thích toàn bộ workflow):
+    - bac_chat_luong: Nhãn phân loại ('Kém', 'Trung bình', 'Thượng hạng')
+    - ma_bac_chat_luong: Mã số thứ tự (0: Kém, 1: Trung bình, 2: Thượng hạng)
+    - chat_luong_cao: Nhãn nhị phân (1 nếu điểm >= 6.5, 0 nếu < 6.5)
     """
     df = df.copy()
+    diem = df["diem_chat_luong"]
 
-    def gan_nhan(diem):
-        if diem <= 4:
-            return "Kém"
-        elif diem <= 6:
-            return "Trung bình"
-        else:
-            return "Thượng hạng"
-
-    df["bac_chat_luong"] = df["diem_chat_luong"].apply(gan_nhan)
-
-    # Đặt thứ tự cho Categorical để hỗ trợ sắp xếp và biểu đồ
     thu_tu_bac = ["Kém", "Trung bình", "Thượng hạng"]
-    df["bac_chat_luong"] = pd.Categorical(df["bac_chat_luong"], categories=thu_tu_bac, ordered=True)
-
-    # Mã số tương ứng
     anh_xa_ma = {"Kém": 0, "Trung bình": 1, "Thượng hạng": 2}
-    df["ma_bac_chat_luong"] = df["bac_chat_luong"].map(anh_xa_ma).astype(int)
 
-    # Nhãn nhị phân
-    df["chat_luong_cao"] = (df["diem_chat_luong"] >= 7).astype(int)
+    nhan_phan_loai = np.select(
+        condlist=[diem <= nguong_te, diem >= nguong_tot],
+        choicelist=["Kém", "Thượng hạng"],
+        default="Trung bình"
+    )
+
+    df["bac_chat_luong"] = pd.Categorical(nhan_phan_loai, categories=thu_tu_bac, ordered=True)
+    df["ma_bac_chat_luong"] = df["bac_chat_luong"].map(anh_xa_ma).astype(int)
+    df["chat_luong_cao"] = (diem >= nguong_tot).astype(int)
 
     return df
 
@@ -171,44 +184,31 @@ def lam_sach_toan_dien(
 ) -> pd.DataFrame:
     """
     Quy trình làm sạch và chuẩn hóa toàn diện từ dữ liệu thô.
-
-    Tham số:
-        df_goc: DataFrame thô đầu vào. Nếu None, sẽ tự đọc từ data/chatluong_ruougoc.csv.
-        loai_bo_trung_lap: True nếu muốn xóa dòng trùng lặp hoàn toàn (mặc định False theo thiết kế).
-        luu_file: True nếu muốn lưu ra file data/duleu_chuan.feather.
-
-    Trả về:
-        DataFrame đã làm sạch và phân bậc chuẩn mực.
     """
     if df_goc is None:
         df_goc = doc_du_lieu_goc()
 
     print("[INFO] Bắt đầu quy trình làm sạch dữ liệu...")
 
-    # 1. Chuẩn hóa tên cột
     df = chuan_hoa_ten_cot(df_goc)
     print(f"[INFO] Đã chuẩn hóa {len(df.columns)} cột sang tiếng Việt.")
 
-    # 2. Báo cáo chất lượng dữ liệu
     chat_luong = kiem_tra_chat_luong_du_lieu(df)
     print(f"[INFO] Tổng số mẫu: {chat_luong['tong_so_dong']}")
     print(f"[INFO] Số dòng trùng lặp: {chat_luong['so_dong_trung_lap']} ({chat_luong['ti_le_trung_lap']}%)")
     if chat_luong["cot_thieu_du_lieu"]:
         print(f"[CẢNH BÁO] Phát hiện cột thiếu dữ liệu: {chat_luong['cot_thieu_du_lieu']}")
-        # Điền giá trị thiếu bằng trung vị (median) theo từng loại rượu
         for col in chat_luong["cot_thieu_du_lieu"].keys():
             df[col] = df.groupby("loai_ruou")[col].transform(lambda x: x.fillna(x.median()))
     else:
         print("[INFO] Dữ liệu hoàn hảo: Không có giá trị thiếu (No missing values).")
 
-    # Xử lý trùng lặp nếu được yêu cầu
     if loai_bo_trung_lap:
         so_dong_truoc = len(df)
         df = df.drop_duplicates().reset_index(drop=True)
         print(f"[INFO] Đã loại bỏ {so_dong_truoc - len(df)} dòng trùng lặp. Còn lại {len(df)} dòng.")
 
-    # 3. Xử lý ngoại lai bằng Winsorization / Capping (1% - 99%)
-    df_capped, thong_tin_capping = xu_ly_ngoai_lai_capping(
+    df_capped, _ = xu_ly_ngoai_lai_capping(
         df,
         danh_sach_cot=CAC_COT_HOA_LY,
         phan_vi_duoi=0.01,
@@ -216,14 +216,12 @@ def lam_sach_toan_dien(
     )
     print("[INFO] Đã hoàn tất Winsorization/Capping cho 11 chỉ số hóa lý (bảo tồn nguyên vẹn kích thước mẫu).")
 
-    # 4. Tạo biến phân bậc chất lượng
-    df_chuan = tao_bien_phan_bac_chat_luong(df_capped)
-    print("[INFO] Phân bố 3 bậc chất lượng:")
+    df_chuan = tao_bien_phan_bac_chat_luong(df_capped, nguong_te=4.0, nguong_tot=6.5)
+    print("[INFO] Phân bố 3 bậc chất lượng (Kém <= 4.0 | Trung bình | Thượng hạng >= 6.5):")
     for bac, count in df_chuan["bac_chat_luong"].value_counts().items():
         ty_le = (count / len(df_chuan)) * 100
         print(f"       - Bậc {bac}: {count} mẫu ({ty_le:.2f}%)")
 
-    # 5. Lưu ra định dạng Feather
     if luu_file:
         luu_du_lieu_chuan(df_chuan)
 

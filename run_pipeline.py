@@ -25,7 +25,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data_loader import tai_du_lieu_uci, doc_du_lieu_chuan
 from src.cleaner import lam_sach_toan_dien, CAC_COT_HOA_LY
-from src.visualizer import ve_tat_ca_bieu_do
+from src.visualizer import ve_tat_ca_bieu_do, ve_so_sanh_lech_moi_truong
+from src.environment_simulator import WineEnvironmentSimulator, KICH_BAN_MOI_TRUONG
 
 
 def in_dong_ke(ky_tu="=", do_dai=78):
@@ -81,21 +82,21 @@ def main():
     # ----------------------------------------------------
     # BƯỚC 1: TẢI & NẠP DỮ LIỆU GỐC
     # ----------------------------------------------------
-    print("\n[BƯỚC 1/4] KIỂM TRA VÀ NẠP DỮ LIỆU THÔ TỪ UCI...")
+    print("\n[BƯỚC 1/5] KIỂM TRA VÀ NẠP DỮ LIỆU THÔ TỪ UCI...")
     df_goc = tai_du_lieu_uci(bat_buoc_tai_lai=False)
     print(f" -> Nạp thành công {len(df_goc)} mẫu dữ liệu thô.")
 
     # ----------------------------------------------------
     # BƯỚC 2: TIỀN XỬ LÝ & LÀM SẠCH DỮ LIỆU
     # ----------------------------------------------------
-    print("\n[BƯỚC 2/4] LÀM SẠCH, CAPPING NGOẠI LAI VÀ PHÂN BẬC CHẤT LƯỢNG...")
+    print("\n[BƯỚC 2/5] LÀM SẠCH, CAPPING NGOẠI LAI VÀ PHÂN BẬC CHẤT LƯỢNG...")
     df_chuan = lam_sach_toan_dien(df_goc, loai_bo_trung_lap=False, luu_file=True)
     print(f" -> Dữ liệu chuẩn hóa đã được lưu vào data/duleu_chuan.feather.")
 
     # ----------------------------------------------------
     # BƯỚC 3: TRỰC QUAN HÓA & XUẤT BIỂU ĐỒ VÀO bieu_do/
     # ----------------------------------------------------
-    print("\n[BƯỚC 3/4] XUẤT 8 BIỂU ĐỒ PHÂN TÍCH CHUYÊN NGHIỆP VÀO THƯ MỤC bieu_do/...")
+    print("\n[BƯỚC 3/5] XUẤT 8 BIỂU ĐỒ PHÂN TÍCH CHUYÊN NGHIỆP VÀO THƯ MỤC bieu_do/...")
     danh_sach_anh = ve_tat_ca_bieu_do(df_chuan)
     print(f" -> Đã xuất thành công {len(danh_sach_anh)} biểu đồ 300 DPI:")
     for anh in danh_sach_anh:
@@ -104,7 +105,7 @@ def main():
     # ----------------------------------------------------
     # BƯỚC 4: ĐỐI SÁNH THỐNG KÊ (STATISTICAL BENCHMARKING)
     # ----------------------------------------------------
-    print("\n[BƯỚC 4/4] ĐỐI SÁNH THỐNG KÊ VÀ KIỂM ĐỊNH GIẢ THUYẾT (ANOVA & KRUSKAL)...")
+    print("\n[BƯỚC 4/5] ĐỐI SÁNH THỐNG KÊ VÀ KIỂM ĐỊNH GIẢ THUYẾT (ANOVA & KRUSKAL)...")
     df_doi_sanh = chay_doi_sanh_thong_ke(df_chuan)
 
     duong_dan_bao_cao = PROJECT_ROOT / "data" / "bao_cao_doi_sanh_thong_ke.csv"
@@ -118,17 +119,56 @@ def main():
     in_dong_ke("-")
 
     # ----------------------------------------------------
+    # BƯỚC 5: MÔ PHỎNG LỆCH MÔI TRƯỜNG & TÁI XÁC LẬP ĐIỂM TIỀM NĂNG
+    # ----------------------------------------------------
+    print("\n[BƯỚC 5/5] MÔ PHỎNG LỆCH HÓA LÝ & TÁI THIẾT LẬP ĐIỂM TIỀM NĂNG (AN TOÀN - KHÔNG GHI ĐÈ FILE GỐC)...")
+    sim_tool = WineEnvironmentSimulator(df_chuan)
+
+    # Chạy kịch bản Sốc nhiệt & Bảo quản nơi nóng bức (Heat shock, intensity = 0.5)
+    ten_kb = "heat_shock"
+    df_sim = sim_tool.tao_du_lieu_lech_moi_truong(kich_ban=ten_kb, intensity=0.5)
+    df_drift = sim_tool.tinh_toan_chi_so_drift(df_sim, df_chuan)
+    ma_tran_chuyen_doi, thong_ke_chuyen_doi = sim_tool.tinh_ma_tran_chuyen_doi_chat_luong(df_sim)
+
+    # Lưu dữ liệu an toàn vào các file riêng biệt (không ảnh hưởng file gốc CSV)
+    file_xuat = sim_tool.xuat_bao_cao_va_du_lieu_an_toan(df_sim, df_drift, ma_tran_chuyen_doi)
+    print(f" -> Đã lưu dữ liệu mô phỏng lệch môi trường: {file_xuat['feather']}")
+    print(f" -> Đã lưu báo cáo kiểm định Drift (KS & Wasserstein): {file_xuat['bao_cao_drift']}")
+    print(f" -> Đã lưu ma trận chuyển dịch chất lượng: {file_xuat['ma_tran_chuyen_doi']}")
+
+    # Xuất biểu đồ 09 đối sánh lệch môi trường
+    anh_mo_phong = ve_so_sanh_lech_moi_truong(
+        df_goc=df_chuan,
+        df_sim=df_sim,
+        ten_kich_ban=KICH_BAN_MOI_TRUONG[ten_kb]
+    )
+    print(f" -> Đã xuất biểu đồ mô phỏng độ lệch: {anh_mo_phong.name}\n")
+
+    in_dong_ke("-")
+    print(f" MA TRẬN CHUYỂN DỊCH BẬC CHẤT LƯỢNG KHI BỊ {KICH_BAN_MOI_TRUONG[ten_kb].upper()}")
+    in_dong_ke("-")
+    print(ma_tran_chuyen_doi)
+    in_dong_ke("-")
+    print(f" * Tỉ lệ mẫu bị tụt hạng chất lượng: {thong_ke_chuyen_doi['ti_le_tut_hang_pct']}% ({thong_ke_chuyen_doi['so_mau_tut_hang']}/{thong_ke_chuyen_doi['tong_so_mau']} mẫu)")
+    print(f" * Điểm trung bình: Gốc = {thong_ke_chuyen_doi['diem_goc_mean']} -> Tiềm năng = {thong_ke_chuyen_doi['diem_tiem_nang_mean']} (Δ = {thong_ke_chuyen_doi['delta_diem_trung_binh']})")
+    in_dong_ke("-")
+
+    # ----------------------------------------------------
     # TỔNG KẾT
     # ----------------------------------------------------
     thoi_gian_chay = time.time() - thoi_gian_bat_dau
     in_tieu_de(f"HOÀN TẤT TOÀN BỘ QUY TRÌNH THÀNH CÔNG (THỜI GIAN: {thoi_gian_chay:.2f} GIÂY)")
-    print("\nCác sản phẩm đã tạo:")
-    print(" 1. Dữ liệu chuẩn hóa:     data/duleu_chuan.feather")
-    print(" 2. Báo cáo đối sánh CSV:  data/bao_cao_doi_sanh_thong_ke.csv")
-    print(" 3. Bộ sưu tập biểu đồ:    bieu_do/ (01 đến 08)")
-    print(" 4. Bộ 3 Notebooks:        notebooks/*.ipynb")
-    print("\nBạn có thể khởi động Jupyter Notebook để khám phá trực quan từng bước:")
-    print("    jupyter notebook notebooks/")
+    print("\nCác sản phẩm đã tạo & bảo toàn:")
+    print(" [BẢO TOÀN NGUYÊN BẢN] File gốc UCI:       data/chatluong_ruougoc.csv (KHÔNG BỊ THAY ĐỔI)")
+    print(" 1. Dữ liệu chuẩn hóa:                     data/duleu_chuan.feather")
+    print(" 2. Báo cáo đối sánh ANOVA/Kruskal:        data/bao_cao_doi_sanh_thong_ke.csv")
+    print(" 3. Dữ liệu lệch môi trường & điểm mới:    data/duleu_lech_moi_truong.feather")
+    print(" 4. Báo cáo Drift hóa lý:                  data/bao_cao_lech_moi_truong.csv")
+    print(" 5. Ma trận chuyển dịch chất lượng:        data/ma_tran_chuyen_doi_chat_luong.csv")
+    print(" 6. Bộ sưu tập biểu đồ 300 DPI:            bieu_do/ (01 đến 09)")
+    print(" 7. Bộ Notebooks phân tích & mô phỏng:     notebooks/*.ipynb")
+    print("\nKhởi động Jupyter Notebook để khám phá công cụ mô phỏng lệch môi trường tương tác:")
+    print("    jupyter notebook notebooks/environmental_drift_simulation.ipynb")
     in_dong_ke("=")
 
 
